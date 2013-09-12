@@ -1,6 +1,6 @@
 (ns blurb.test.handler
   (:use clojure.test
-        ring.mock.request  
+        ring.mock.request
         blurb.handler))
 
 (deftest test-app
