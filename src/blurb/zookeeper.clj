@@ -1,51 +1,67 @@
 (ns blurb.zookeeper
-  (:require [zookeeper :as zk]))
+  (:require [clojure.string :as s])
+  (:import [org.apache.curator.framework CuratorFrameworkFactory CuratorFramework]
+           [org.apache.curator.retry ExponentialBackoffRetry]))
 
-(defn get-client []
-  (zk/connect "localhost:2181"))
+(defprotocol Startable
+  (start! [this] "Start necessary long-lived state"))
+(defprotocol Stopable
+  (stop! [this] "Stop any held long-lived state"))
+(defprotocol Refresh
+  (refresh! [this] "Reset any held long-lived state"))
 
-(defn get-clusters
-  "Takes a zookeeper client and returns a sequence of cluster names"
-  [client]
-  (zk/children client "/blur/clusters"))
+(defprotocol Zookeeper
+  (clusters [this] "Returns the sequence of cluster names")
+  (tables [this cluster] "Returns the sequence of tables names in the cluster")
+  (registered-nodes [this cluster] "Returns the sequence of the registered nodes in the cluster")
+  (online-nodes [this cluster] "Returns the sequence of the online nodes in the cluster")
+  (node-version [this cluster node] "Retrieves the version of the node"))
 
-(defn get-tables
-  "Takes a zookeeper client and a cluster name, and returns a sequence of the
-   tables in the cluster"
-  [client cluster]
-  (zk/children client (str "/blur/clusters/" cluster "/tables")))
+(defrecord Curator
+  [framework]
+  Startable
+  (start! [this] (.start framework))
+  Stopable
+  (stop! [this] (.close framework))
+  Zookeeper
+  (clusters [this]
+    (-> framework (.getChildren) (.forPath "/clusters")))
+  (tables [this cluster]
+    (-> framework (.getChildren) (.forPath (str "/clusters/" cluster "/tables"))))
+  (registered-nodes [this cluster]
+    (-> framework (.getChildren) (.forPath (str "/clusters/" cluster "/registered-nodes"))))
+  (online-nodes [this cluster]
+    (-> framework (.getChildren) (.forPath (str "/clusters/" cluster "/online-nodes"))))
+  (node-version [this cluster node]
+    (-> framework (.getData) (.forPath (str "/clusters/" cluster "/online-nodes/" node)) (String.))))
 
-(defn get-registered-nodes
-  "Takes a zookeeper client and a cluster name, and returns a sequence of the
-   registered nodes in the cluster"
-  [client cluster]
-  (zk/children client (str "/blur/clusters/" cluster "/registered-nodes")))
-
-(defn get-online-nodes
-  "Takes a zookeeper client and a cluster name, and returns a sequence of the
-   online nodes in the cluster"
-  [client cluster]
-  (zk/children client (str "/blur/clusters/" cluster "/online-nodes")))
+(defn zookeeper
+  "Creates a Curator record, which implements the Zookeeper, Startable, Stopable,
+   and Resetable protocols"
+  [{:keys [hosts namespace session-timeout connection-timeout] :or {namespace "blur"}}]
+  (let [retry (ExponentialBackoffRetry. 1000 3)
+        framework (-> (CuratorFrameworkFactory/builder)
+                      (.retryPolicy retry)
+                      (.connectString (s/join ";" hosts))
+                      (.namespace namespace)
+                      (cond->
+                        session-timeout (.sessionTimeout session-timeout)
+                        connection-timeout (.connectionTimeout connection-timeout))
+                      (.build))]
+    (->Curator framework)))
 
 (comment
 
   (def zk
-    (zk/connect "localhost:2181"))
+    (zookeeper {:hosts ["localhost:2181"]
+                :namespace "blur"}))
 
-  (identity zk)
-  (zk/children zk "/blur")
-  (zk/children zk "/blur/clusters")
-  (zk/children zk "/blur/clusters/default")
-  (zk/children zk "/blur/clusters/default/online-nodes")
-  (zk/children zk "/blur/clusters/default/registered-nodes")
-  (zk/children zk "/blur/clusters/default/tables")
-
-  (zk/data zk "/blur/clusters/default/safemode")
-  (zk/children zk  "/blur/clusters/default")
-
-  (get-clusters zk)
-  (get-tables zk "default")
-  (type (get-registered-nodes zk "default"))
-  (get-online-nodes zk "default")
+  (start! zk)
+  (clusters zk)
+  (tables zk "default")
+  (registered-nodes zk "default")
+  (online-nodes zk "default")
+  (node-version zk "default" "nic-dburkert:40020")
+  (stop! zk)
 
  )
